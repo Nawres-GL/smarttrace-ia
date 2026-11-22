@@ -1,0 +1,16 @@
+{
+  "documents": [
+    {
+      "file": "smarttrace_guide_technique.md",
+      "title": "Architecture et fonctionnalités SmartTrace — guide applicatif",
+      "roles": ["admin", "production", "qualite", "logistique", "lecture"],
+      "sites": []
+    },
+    {
+      "file": "controle_qualite_smarttrace.md",
+      "title": "Étapes du contrôle qualité avant livraison — guide du logiciel NON OFFICIEL",
+      "roles": ["admin", "production", "qualite", "logistique", "lecture"],
+      "sites": []
+    }
+  ]
+}

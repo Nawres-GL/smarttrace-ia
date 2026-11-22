@@ -1,0 +1,80 @@
+{
+  "status": "synthetic_bootstrap_not_real_validation",
+  "split_policy": "disjoint phrase families; disjoint city vocabularies",
+  "sampling": {
+    "humidity_pct": [
+      0,
+      100
+    ],
+    "temperature_c": [
+      10,
+      40
+    ],
+    "quantity_plants": [
+      1,
+      50000
+    ],
+    "duration_hours": [
+      2,
+      240
+    ],
+    "geographical_scope": "illustrative Tunisian cities and governorates, not exhaustive"
+  },
+  "note": "Ranges train extraction. They do not define acceptable crop conditions or validate business events.",
+  "result": {
+    "train": {
+      "path": "data/nlp/train.jsonl",
+      "rows": 2404,
+      "intents": {
+        "CONTROLE_QUALITE": 200,
+        "RETOUR": 200,
+        "RECEPTION_SEMENCES": 200,
+        "SEMIS": 200,
+        "GERMINATION": 204,
+        "GREFFAGE": 200,
+        "LIVRAISON": 200,
+        "PREPARATION": 200,
+        "TRANSFERT": 200,
+        "INTERVENTION": 200,
+        "PERTES": 200,
+        "HORS_SUJET": 200
+      }
+    },
+    "validation": {
+      "path": "data/nlp/validation.jsonl",
+      "rows": 300,
+      "intents": {
+        "PREPARATION": 25,
+        "TRANSFERT": 25,
+        "GREFFAGE": 25,
+        "PERTES": 25,
+        "CONTROLE_QUALITE": 25,
+        "GERMINATION": 25,
+        "RECEPTION_SEMENCES": 25,
+        "RETOUR": 25,
+        "SEMIS": 25,
+        "LIVRAISON": 25,
+        "HORS_SUJET": 25,
+        "INTERVENTION": 25
+      }
+    },
+    "test_synthetic": {
+      "path": "data/nlp/test_synthetic.jsonl",
+      "rows": 600,
+      "intents": {
+        "TRANSFERT": 50,
+        "INTERVENTION": 50,
+        "GREFFAGE": 50,
+        "LIVRAISON": 50,
+        "CONTROLE_QUALITE": 50,
+        "RETOUR": 50,
+        "SEMIS": 50,
+        "GERMINATION": 50,
+        "PREPARATION": 50,
+        "RECEPTION_SEMENCES": 50,
+        "PERTES": 50,
+        "HORS_SUJET": 50
+      }
+    }
+  }
+}

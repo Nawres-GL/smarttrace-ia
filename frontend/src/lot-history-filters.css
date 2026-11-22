@@ -1,0 +1,14 @@
+/* Historical lookup controls are deliberately scoped to the two admin-only pages. */
+.rp-history-filters { display:grid; grid-template-columns:repeat(3,minmax(145px,1fr)) auto; gap:12px; align-items:end; margin:12px 0 20px; }
+.rp-history-filters label { display:flex; flex-direction:column; gap:6px; font-size:13px; font-weight:600; color:inherit; min-width:0; }
+.rp-history-filters select { width:100%; min-width:0; border:1px solid #ccd7d0; border-radius:10px; padding:10px 12px; font:inherit; font-weight:400; background:#fff; color:#18382d; }
+.rp-history-filters select:focus-visible, .rp-history-reset:focus-visible { outline:3px solid #79bb93; outline-offset:2px; }
+.rp-history-reset { border:1px solid #becfc4; border-radius:10px; padding:11px 13px; cursor:pointer; background:transparent; font:inherit; white-space:nowrap; }
+.rp-history-filter-note,.rp-history-filter-error { grid-column:1/-1; font-size:12px; }
+.rp-history-filter-error { color:#a12222; }
+.op-historical-baseline > summary { cursor:pointer; list-style:none; }
+.op-historical-baseline > summary::-webkit-details-marker { display:none; }
+.op-historical-baseline > summary::after { content:'Déplier ▾'; margin-left:auto; font-size:12px; opacity:.75; }
+.op-historical-baseline[open] > summary::after { content:'Réduire ▴'; }
+@media (max-width:1000px) { .rp-history-filters { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:600px) { .rp-history-filters { grid-template-columns:minmax(0,1fr); } }

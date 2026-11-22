@@ -1,0 +1,30 @@
+{"question":"Combien de livraisons par client ?","role":"admin","dataset":"operational_deliveries","metric":"records","group_by":"client"}
+{"question":"Combien de plants ont été semés par espèce ?","role":"admin","dataset":"operational_lots","metric":"sown","group_by":"species"}
+{"question":"Quelles variétés ont les meilleurs taux de germination pendant C25 ?","role":"admin","dataset":"historical_production","metric":"germination_rate","group_by":"variety"}
+{"question":"Quels lots ont un ratio de perte supérieur à 30 % ?","role":"admin","dataset":"operational_lots","metric":"loss_rate","group_by":"lot_code"}
+{"question":"Quel est le taux moyen de greffage par article ?","role":"admin","dataset":"historical_grafting","metric":"grafting_rate","group_by":"article"}
+{"question":"Quelle quantité a été livrée par client ou par ville ?","role":"admin","dataset":"historical_deliveries","metric":"item_quantity","group_by":"client"}
+{"question":"Quelles commandes restent à livrer ?","role":"logistique","dataset":"operational_preparations","metric":"pending","group_by":"order"}
+{"question":"Combien de lots attendent encore un contrôle qualité ?","role":"production","dataset":"operational_lots","metric":"lots","group_by":null}
+{"question":"Comment fonctionne le contrôle qualité avant livraison ?","role":"admin","dataset":null,"metric":null,"group_by":null}
+{"question":"Quelles sont les étapes de certification des lots ?","role":"admin","dataset":null,"metric":null,"group_by":null}
+{"question":"Compare les taux de germination des tomates pour C25.","role":"admin","dataset":"historical_production","metric":"germination_rate","group_by":"variety"}
+{"question":"Quel est le taux de greffage moyen par article dans l'historique ?","role":"admin","dataset":"historical_grafting","metric":"grafting_rate","group_by":"article"}
+{"question":"Quel est le nombre de bons de livraison par ville pendant C25 ?","role":"admin","dataset":"historical_deliveries","metric":"delivery_notes","group_by":"city"}
+{"question":"Combien de livraisons par ville ?","role":"admin","dataset":"historical_deliveries","metric":"delivery_notes","group_by":"city"}
+{"question":"Combien de livraisons par ville ?","role":"logistique","dataset":null,"metric":null,"group_by":null}
+{"question":"Quantité de semences semées par campagne C25 ?","role":"admin","dataset":"historical_production","metric":"sown","group_by":"campaign"}
+{"question":"Combien de plants nets produits en C25 ?","role":"admin","dataset":"historical_production","metric":"plants_net","group_by":null}
+{"question":"Quel est le stock de plants par site ?","role":"production","dataset":"operational_lots","metric":"stock","group_by":"site"}
+{"question":"Quels lots ont subi un taux de perte supérieur à 20 % ?","role":"production","dataset":"operational_lots","metric":"loss_rate","group_by":"lot_code"}
+{"question":"Quelle quantité reste à livrer par client ?","role":"logistique","dataset":"operational_preparations","metric":"pending","group_by":"client"}
+{"question":"Quel est le nombre de lots distincts par site ?","role":"production","dataset":"operational_lots","metric":"lots","group_by":"site"}
+{"question":"Quel est le taux de germination moyen par variété ?","role":"admin","dataset":"operational_germination","metric":"germination_rate","group_by":"variety"}
+{"question":"Quel est le taux de germination moyen par variété en C25 ?","role":"admin","dataset":"historical_production","metric":"germination_rate","group_by":"variety"}
+{"question":"Quel est le taux de greffage moyen par article en C25 ?","role":"admin","dataset":"historical_grafting","metric":"grafting_rate","group_by":"article"}
+{"question":"Quel est le taux de greffage moyen par article sur les lots actifs ?","role":"admin","dataset":null,"metric":null,"group_by":null}
+{"question":"Quels clients ont reçu le plus de livraisons dans l'historique C25 ?","role":"admin","dataset":"historical_deliveries","metric":"delivery_notes","group_by":"client"}
+{"question":"Combien de semences semées au total dans la production active ?","role":"production","dataset":"operational_lots","metric":"sown","group_by":null}
+{"question":"Quel est le nombre d'événements par type d'opération ?","role":"admin","dataset":"operational_events","metric":"records","group_by":"event_type"}
+{"question":"Quel est le total de semences semées par espèce durant C25 ?","role":"admin","dataset":"historical_production","metric":"sown","group_by":"species"}
+{"question":"Quelles sont les procédures de traçabilité des plants ?","role":"lecture","dataset":null,"metric":null,"group_by":null}

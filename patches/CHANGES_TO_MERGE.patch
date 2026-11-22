@@ -1,0 +1,160 @@
+--- a/backend/app/history.py
++++ b/backend/app/history.py
+@@ -140,19 +140,31 @@
+ 
+ 
+ @router.get('/overview')
+-def overview():
+-    """Historical dashboard totals. The route was accidentally removed in Phase 4.
+-
+-    The entire historical router is protected by admin-only dependency in main.py.
++def overview(campaign: str = Query('', max_length=20),
++             species: str = Query('', max_length=120),
++             article: str = Query('', max_length=120)):
++    """Admin-only historical dashboard totals within the selected lot filters.
++
++    No Excel content is edited. All source links remain five-digit *candidate*
++    associations, not proven grafting genealogy or operational stock.
+     """
+     p, d, g, pi, di, gi = indexes()
+-    shared = pi.keys() & di.keys()
+-    return {'production_rows': len(p), 'delivery_rows': len(d), 'grafting_rows': len(g),
+-            'production_lots': len(pi), 'grafting_lots': len(gi),
+-            'production_grafting_shared_lots': len(pi.keys() & gi.keys()),
+-            'linked_lots': len(shared),
+-            'delivery_lines_linked': sum(len(di[c]) for c in shared),
+-            'unlinked_delivery_lines': sum(len(v) for k,v in di.items() if k not in pi),
++    filtered = bool(campaign or species or article)
++    if filtered:
++        selected_codes = {row['lot_code'] for row in
++                          filtered_catalogue(catalogue(), campaign, species, article)}
++    else:
++        selected_codes = set(pi) | set(di) | set(gi)
++    p_codes, d_codes, g_codes = set(pi) & selected_codes, set(di) & selected_codes, set(gi) & selected_codes
++    return {'production_rows': sum(len(pi[c]) for c in p_codes),
++            'delivery_rows': sum(len(di[c]) for c in d_codes),
++            'grafting_rows': sum(len(gi[c]) for c in g_codes),
++            'production_lots': len(p_codes), 'grafting_lots': len(g_codes),
++            'production_grafting_shared_lots': len(p_codes & g_codes),
++            'linked_lots': len(p_codes & d_codes),
++            'delivery_lines_linked': sum(len(di[c]) for c in p_codes & d_codes),
++            'unlinked_delivery_lines': sum(len(di[c]) for c in d_codes - p_codes),
++            'scoped_lots': len(selected_codes), 'filtered': filtered,
+             'source_mode': os.getenv('HISTORY_MODE', 'excel').lower(),
+             'link_rule': 'LOT / Lot_Production / N° Lot : code commun à cinq chiffres',
+             'certification': 'DONNEES_HISTORIQUES_NON_CERTIFIEES'}
+@@ -167,7 +179,8 @@
+     campaigns = sorted({x['campaign'] for x in items if x['campaign']}, reverse=True)
+     species_values = sorted({name for row in filtered_catalogue(items, campaign=campaign)
+                              for name in (row['species'] or ['Non renseignée'])}, key=str.casefold)
+-    articles = sorted({name for row in scoped for name in (row['articles'] or row['varieties'] or ['Non renseigné'])}, key=str.casefold)
++    # Offer BOTH article and variety names, rather than hiding varieties when an article exists.
++    articles = sorted({name for row in scoped for name in (row['articles'] + row['varieties'] or ['Non renseigné'])}, key=str.casefold)
+     return {'campaigns': [{'value': c, 'label': f'Campagne {c[1:]} · {campaign_bounds(c)[0].strftime("%d/%m/%Y")} – {campaign_bounds(c)[1].strftime("%d/%m/%Y")}'} for c in campaigns],
+             'unknown_campaigns': sum(x['campaign'] is None for x in items),
+             'species': species_values, 'articles': articles}
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -3,6 +3,7 @@
+ import OperationalWorkspace from './OperationalWorkspace.jsx';
+ import AssistantNLP from './AssistantNLP.jsx';
+ import RAGAssistant from './RAGAssistant.jsx';
++import LotHistoryFilters from './LotHistoryFilters.jsx';
+ import './operations.css';
+ 
+ const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+@@ -54,7 +55,7 @@
+         <div className="tray-front"/><div className="tray-side"/>
+       </div>
+     </div>
+-    <div className="scene-callout callout-top"><span className="callout-dot"/> LOT 13766 <span className="callout-success">• LIÉ</span></div>
++    <div className="scene-callout callout-top"><span className="callout-dot"/> LOTS <span className="callout-success">• HISTORIQUE</span></div>
+     <div className="scene-callout callout-bottom"><Icon name="shield" size={14}/> Traçabilité intelligente</div>
+     <span className="orbit orbit-a"/><span className="orbit orbit-b"/>
+   </div>;
+@@ -62,8 +63,8 @@
+ 
+ function StatusPill({status}) {
+   const isLink = status==='LOT_LIE', uncertain=status==='PLUSIEURS_REFERENCES';
+-  const value = isLink?'Lié aux livraisons':uncertain?'Références multiples':status==='PRODUCTION_SEULE'?'Production seule':status==='GREFFE_SEULE'?'Greffage seul':status==='GREFFE_LIVRAISON'?'Greffage & livraisons':'Livraison seule';
+-  return <span className={'pill '+(isLink?'pill-green':uncertain?'pill-amber':'pill-muted')}><i/>{value}</span>;
++  const value = isLink?'Correspondance Excel':uncertain?'Références multiples':status==='PRODUCTION_SEULE'?'Production seule':status==='GREFFE_SEULE'?'Greffage seul':status==='GREFFE_LIVRAISON'?'Greffage & livraisons':'Livraison seule';
++  return <span className={'pill '+(isLink?'pill-muted':uncertain?'pill-amber':'pill-muted')}><i/>{value}</span>;
+ }
+ 
+ function Stat({icon, label, value, sub, tone}) {
+@@ -137,14 +138,44 @@
+ 
+   const [overview,setOverview]=useState(null),[lots,setLots]=useState([]),[total,setTotal]=useState(0);
+   const [search,setSearch]=useState(''),[offset,setOffset]=useState(0);
++  const [historyFilters,setHistoryFilters]=useState({campaign:'', species:'', article:''});
+   const [detail,setDetail]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
+   const [detailLoading,setDetailLoading]=useState(false);
+ 
+   async function api(path){const r=await fetch(`${API}${path}`,{headers:{Authorization:`Bearer ${token}`}});const json=await r.json().catch(()=>({}));if(!r.ok)throw new Error(json.detail||'Impossible de charger les données');return json;}
+-  useEffect(()=>{if(!token||session.user.role!=='admin')return;api('/api/historique/overview').then(setOverview).catch(e=>setError(e.message)).finally(()=>setLoading(false));},[token]);
+-  useEffect(()=>{if(!token||session.user.role!=='admin')return;const t=setTimeout(()=>{api(`/api/historique/lots?search=${encodeURIComponent(search)}&limit=24&offset=${offset}`).then(d=>{setLots(d.items);setTotal(d.total);}).catch(e=>setError(e.message));},180);return ()=>clearTimeout(t);},[search,offset,token]);
++  const historyParams = () => new URLSearchParams({
++    campaign:historyFilters.campaign, species:historyFilters.species, article:historyFilters.article,
++  }).toString();
++  useEffect(()=>{
++    if(!token||session.user.role!=='admin')return;
++    let alive=true;
++    api(`/api/historique/overview?${historyParams()}`)
++      .then(x=>{if(alive)setOverview(x);}).catch(e=>{if(alive)setError(e.message);});
++    return ()=>{alive=false;};
++  },[token,historyFilters]);
++  useEffect(()=>{
++    if(!token||session.user.role!=='admin')return;
++    let alive=true;
++    const t=setTimeout(()=>{
++      const params=new URLSearchParams({search,limit:'24',offset:String(offset),
++        campaign:historyFilters.campaign,species:historyFilters.species,article:historyFilters.article});
++      api(`/api/historique/lots?${params.toString()}`).then(d=>{
++        if(alive){setLots(d.items);setTotal(d.total);setLoading(false);}
++      }).catch(e=>{if(alive){setError(e.message);setLoading(false);}});
++    },180);
++    return ()=>{alive=false;clearTimeout(t);};
++  },[search,offset,token,historyFilters]);
+   async function openLot(code){setDetailLoading(true);try{setError('');setDetail(await api('/api/historique/lots/'+encodeURIComponent(code)));}catch(e){setError(e.message);}finally{setDetailLoading(false);}}
+   const setQuery=s=>{setSearch(s);setOffset(0);};
++  function updateHistoryFilter(field, nextValue) {
++    setHistoryFilters(prev=>({
++      ...prev, [field]:nextValue,
++      ...(field==='campaign'?{species:'',article:''}:{}),
++      ...(field==='species'?{article:''}:{}),
++    }));
++    setOffset(0);
++  }
++  function resetHistoryFilters(){setHistoryFilters({campaign:'',species:'',article:''});setSearch('');setOffset(0);}
+   if(!session)return <Login onLogin={data=>{setSession(data);setPage(deepLink||data.user.role!=='admin'?'production':'dashboard');}}/>;
+   return <div className="shell">
+     <aside className="sidebar"><div className="brand-row"><div className="brand-mark"><Icon name="leaf" size={23}/></div><div><strong>Royal Plants</strong><small>SMARTTRACE SYSTEM</small></div></div>
+@@ -157,10 +188,11 @@
+         {page==='assistant'&&<AssistantNLP token={token} onApply={applyNlpDraft}/>}
+         {page==='rag'&&<RAGAssistant token={token}/>}
+         {page==='dashboard'&&<><section className="hero"><div className="hero-copy"><div className="hero-kicker"><span className="kicker-line"/> PLATEFORME DE TRAÇABILITÉ AGRICOLE</div><h1>Chaque lot a une histoire.<br/><span>Retrouvez-la en un instant.</span></h1><p>Reliez les données de production et de livraison, consultez l’historique complet et préparez la traçabilité de demain.</p><button className="primary-btn" onClick={()=>{setPage('lots');document.getElementById('lotsearch')?.focus();}}>Explorer les lots <Icon name="arrow" size={17}/></button><div className="hero-foot"><span className="pulse"/> Données réelles · Connexion par n° de lot</div></div><PlantScene/></section>
+-          <div className="stats-grid"><Stat icon="box" label="Lignes de production" value={overview?fmt(overview.production_rows):'—'} sub="Fichier Production Excel" tone="green"/><Stat icon="truck" label="Lignes de livraison" value={overview?fmt(overview.delivery_rows):'—'} sub="Fichier Livraison Excel" tone="blue"/><Stat icon="link" label="Lots reliés" value={overview?fmt(overview.linked_lots):'—'} sub="Identifiant à 5 chiffres" tone="purple"/><Stat icon="layers" label="Lots de production" value={overview?fmt(overview.production_lots):'—'} sub="Références numériques uniques" tone="orange"/><Stat icon="leaf" label="Lignes de greffage" value={overview?fmt(overview.grafting_rows):'—'} sub="Troisième fichier Excel, lié par LOT" tone="purple"/></div>
+-          <section className="info-strip"><div className="info-strip-icon"><Icon name="link"/></div><div><b>Une seule règle de rapprochement</b><p><code>LOT : RO-13766/25</code> <Icon name="arrow" size={15}/> <code>13766</code> <Icon name="arrow" size={15}/> <code>N° Lot : 13766</code></p></div><span className="source-chip">Aucun fichier modifié</span></section></>}
++          <div className="stats-grid"><Stat icon="box" label="Lignes de production" value={overview?fmt(overview.production_rows):'—'} sub={historyFilters.campaign||historyFilters.species||historyFilters.article?"Excel historique · vue filtrée":"Fichier Production Excel"} tone="green"/><Stat icon="truck" label="Lignes de livraison" value={overview?fmt(overview.delivery_rows):'—'} sub={historyFilters.campaign||historyFilters.species||historyFilters.article?"Excel historique · vue filtrée":"Fichier Livraison Excel"} tone="blue"/><Stat icon="link" label="Lots reliés" value={overview?fmt(overview.linked_lots):'—'} sub="Identifiant à 5 chiffres" tone="purple"/><Stat icon="layers" label="Lots de production" value={overview?fmt(overview.production_lots):'—'} sub="Références numériques uniques" tone="orange"/><Stat icon="leaf" label="Lignes de greffage" value={overview?fmt(overview.grafting_rows):'—'} sub="Troisième fichier Excel, lié par LOT" tone="purple"/></div>
++          <section className="info-strip"><div className="info-strip-icon"><Icon name="link"/></div><div><b>Une seule règle de rapprochement</b><p><code>LOT : RO-XXXXX/25</code> <Icon name="arrow" size={15}/> <code>XXXXX</code> <Icon name="arrow" size={15}/> <code>N° Lot : XXXXX</code></p></div><span className="source-chip">Aucun fichier modifié</span></section></>}
+         {page==='lots'&&<section className="page-heading"><span className="section-eyebrow">CONSULTATION · LOTS</span><h1>Registre de traçabilité</h1><p>Toutes les informations reliées par identifiant de lot, sans modifier les fichiers sources.</p></section>}
+-        {(page==='dashboard'||page==='lots')&&<section className="registry"><SectionHead eyebrow="RECHERCHE INTELLIGENTE" title="Lots de production & livraisons"><span className="count-label">{fmt(total)} identifiant(s)</span></SectionHead><div className="toolbar"><div className="search-input"><Icon name="search" size={19}/><input id="lotsearch" aria-label="Rechercher un lot" value={search} onChange={e=>setQuery(e.target.value)} placeholder="Rechercher n° lot, article ou variété..."/></div><button className="filter-btn" onClick={()=>{setPage('lots');setQuery('13766');}}><Icon name="search" size={17}/> Voir l’exemple 13766</button></div>
++        {(page==='dashboard'||page==='lots')&&<section className="registry"><SectionHead eyebrow="RECHERCHE INTELLIGENTE" title="Lots de production & livraisons"><span className="count-label">{fmt(total)} identifiant(s)</span></SectionHead><div className="toolbar"><div className="search-input"><Icon name="search" size={19}/><input id="lotsearch" aria-label="Rechercher un lot" value={search} onChange={e=>setQuery(e.target.value)} placeholder="Rechercher n° lot, article ou variété..."/></div><button className="filter-btn" onClick={resetHistoryFilters}><Icon name="search" size={17}/> Tout afficher</button></div>
++          <LotHistoryFilters token={token} value={historyFilters} onChange={updateHistoryFilter} onReset={resetHistoryFilters}/>
+           {error&&<div className="error-box"><Icon name="alert"/>{error}<button onClick={()=>setError('')} aria-label="Masquer l'erreur"><Icon name="close" size={14}/></button></div>}
+           <div className="registry-table"><table><thead><tr><th>NUMÉRO DE LOT</th><th>ARTICLE / VARIÉTÉ</th><th>PRODUCTION</th><th>GREFFAGE</th><th>LIVRAISONS</th><th>ÉTAT</th><th/></tr></thead><tbody>{lots.map(l=><tr key={l.lot_code} onClick={()=>openLot(l.lot_code)} tabIndex="0" onKeyDown={e=>{if(e.key==='Enter')openLot(l.lot_code);}}><td><div className="lot-code"><span className="mini-box"><Icon name="box" size={15}/></span><strong>{l.lot_code}</strong></div><small className="lot-ref">{l.lot_refs[0]||'N° Lot : '+l.lot_code}</small></td><td><b>{shown(l.articles[0])}</b><small>{shown(l.varieties[0])}</small></td><td><b>{fmt(l.production_rows)} ligne(s)</b></td><td><b>{fmt(l.grafting_rows||0)} ligne(s)</b></td><td><b>{fmt(l.delivery_rows)} ligne(s)</b></td><td><StatusPill status={l.status}/></td><td><Icon name="chevron" size={17}/></td></tr>)}</tbody></table>
+             {!lots.length&&<div className="empty-table"><Icon name="search" size={28}/><b>{loading?'Chargement en cours…':'Aucun lot trouvé'}</b><p>Vérifiez les fichiers Excel ou modifiez votre recherche.</p></div>}</div>
+--- a/frontend/src/OperationalWorkspace.jsx
++++ b/frontend/src/OperationalWorkspace.jsx
+@@ -177,8 +177,8 @@
+         </form>
+       </div>
+     </div>}
+-    {mode==='production'&&userRole==='admin'&&<div className="op-panel op-historical-baseline"><div className="op-panel-heading"><span className="op-numeral">↗</span><div><h2>Reprendre un lot historique Excel</h2><p>Stock de départ physiquement vérifié. Aucun événement passé n’est inventé.</p></div></div>
+-      <form className="op-form op-baseline-form" onSubmit={submitLegacy}><label>Code à 5 chiffres<input required pattern="[0-9]{5}" placeholder="13766" value={legacy.lot_code} onChange={e=>setLegacy(x=>({...x,lot_code:e.target.value}))}/></label><label>Référence Excel complète<input required placeholder="RO-13766/25" value={legacy.full_reference} onChange={e=>setLegacy(x=>({...x,full_reference:e.target.value}))}/></label><label>Site<select value={legacy.site_code} onChange={e=>setLegacy(x=>({...x,site_code:e.target.value}))}>{sites.map(site=><option key={site.code} value={site.code}>{site.name}</option>)}</select></label><label>Stock compté<input type="number" required min="0" value={legacy.stock_counted} onChange={e=>setLegacy(x=>({...x,stock_counted:e.target.value}))}/></label><label>Emplacement<input required value={legacy.location} onChange={e=>setLegacy(x=>({...x,location:e.target.value}))}/></label><label>Date vérification<input type="date" required value={legacy.verified_on} onChange={e=>setLegacy(x=>({...x,verified_on:e.target.value}))}/></label><label className="op-wide">Justificatif du comptage<textarea required minLength="10" rows="2" value={legacy.verification_note} onChange={e=>setLegacy(x=>({...x,verification_note:e.target.value}))} placeholder="Qui a vérifié le stock et selon quel relevé ?"/></label><button className="op-primary" disabled={busy}>Activer le suivi de ce lot →</button></form></div>}
++    {mode==='production'&&userRole==='admin'&&<details className="op-panel op-historical-baseline"><summary className="op-panel-heading"><span className="op-numeral">↗</span><div><h2>Administration · Reprendre un lot Excel (facultatif)</h2><p>Uniquement si des plants existent encore et ont été physiquement comptés. Aucune opération passée n’est inventée.</p></div></summary>
++      <form className="op-form op-baseline-form" onSubmit={submitLegacy}><label>Code à 5 chiffres<input required pattern="[0-9]{5}" placeholder="13766" value={legacy.lot_code} onChange={e=>setLegacy(x=>({...x,lot_code:e.target.value}))}/></label><label>Référence Excel complète<input required placeholder="RO-13766/25" value={legacy.full_reference} onChange={e=>setLegacy(x=>({...x,full_reference:e.target.value}))}/></label><label>Site<select value={legacy.site_code} onChange={e=>setLegacy(x=>({...x,site_code:e.target.value}))}>{sites.map(site=><option key={site.code} value={site.code}>{site.name}</option>)}</select></label><label>Stock compté<input type="number" required min="0" value={legacy.stock_counted} onChange={e=>setLegacy(x=>({...x,stock_counted:e.target.value}))}/></label><label>Emplacement<input required value={legacy.location} onChange={e=>setLegacy(x=>({...x,location:e.target.value}))}/></label><label>Date vérification<input type="date" required value={legacy.verified_on} onChange={e=>setLegacy(x=>({...x,verified_on:e.target.value}))}/></label><label className="op-wide">Justificatif du comptage<textarea required minLength="10" rows="2" value={legacy.verification_note} onChange={e=>setLegacy(x=>({...x,verification_note:e.target.value}))} placeholder="Qui a vérifié le stock et selon quel relevé ?"/></label><button className="op-primary" disabled={busy}>Activer le suivi de ce lot →</button></form></details>}
+     <div className="op-columns main">
+       <div className="op-panel"><div className="op-panel-heading"><span className="op-numeral">{mode==='production'?'03':'01'}</span><div><h2>Registre opérationnel</h2><p>{lots.length} lot(s) créés dans SmartTrace</p></div></div>
+         <div className="op-list">{lots.map(l=><button className={`op-lot ${selection===l.id?'selected':''}`} key={l.id} onClick={()=>{setSelection(l.id);openDetail(l.id);}}><span className="op-lot-icon">✦</span><span className="op-lot-details"><strong>{l.code}</strong><small>{l.variety} · {l.site_code} · {l.quality_status.replaceAll('_',' ')}</small></span><span className="op-lot-count">{fmt(l.plants_in_stock)} <small>plants</small></span></button>)}{!lots.length&&<div className="op-empty">Aucun lot opérationnel. Créez-en un dans « Production ».</div>}</div>

@@ -1,0 +1,27 @@
+{"question":"Compare les taux de germination des variétés de tomates pour la campagne C25.","role":"admin","dataset":"historical_production","metric":"germination_rate","group_by":"variety"}
+{"question":"Quels lots ont un taux de perte supérieur à 30 % ?","role":"admin","dataset":"operational_lots","metric":"loss_rate","group_by":"lot_code"}
+{"question":"Quelle quantité a été livrée par ville pendant C25 ?","role":"admin","dataset":"historical_deliveries","metric":"item_quantity","group_by":"city"}
+{"question":"Combien de livraisons par client ?","role":"logistique","dataset":"operational_deliveries","metric":"records","group_by":"client"}
+{"question":"Quelles préparations restent à livrer ?","role":"logistique","dataset":"operational_preparations","metric":"pending","group_by":"order"}
+{"question":"Quel est le stock total par site ?","role":"production","dataset":"operational_lots","metric":"stock","group_by":"site"}
+{"question":"Combien de plantes perdues par variété ?","role":"production","dataset":"operational_lots","metric":"lost","group_by":"variety"}
+{"question":"Quels lots attendent un contrôle qualité ?","role":"qualite","dataset":"operational_lots","metric":"records","group_by":"lot_code"}
+{"question":"Quel est le nombre de lots par campagne ?","role":"admin","dataset":"operational_lots","metric":"lots","group_by":"campaign"}
+{"question":"Quelles sont les étapes du contrôle qualité avant livraison ?","role":"production","dataset":null,"metric":null,"group_by":null}
+{"question":"Quel est le taux moyen de greffage dans le fichier Excel ?","role":"admin","dataset":"historical_grafting","metric":"grafting_rate","group_by":null}
+{"question":"Combien de bons de livraison distincts dans les Excel ?","role":"admin","dataset":"historical_deliveries","metric":"delivery_notes","group_by":null}
+{"question":"Quelle est la quantité totale semée par espèce en campagne C25 ?","role":"admin","dataset":"historical_production","metric":"sown","group_by":"species"}
+{"question":"Quels articles ont les plus mauvaises pertes ?","role":"admin","dataset":"operational_lots","metric":"lost","group_by":"article"}
+{"question":"Quels clients ont reçu le plus de quantité ?","role":"logistique","dataset":"operational_deliveries","metric":"quantity","group_by":"client"}
+{"question":"Combien de greffages ont été enregistrés par site ?","role":"production","dataset":"operational_events","metric":"records","group_by":"site"}
+{"question":"Quel est le taux de germination par variété pour les lots opérationnels ?","role":"production","dataset":"operational_germination","metric":"germination_rate","group_by":"variety"}
+{"question":"Combien de retours a-t-on eu ?","role":"production","dataset":"operational_lots","metric":"records","group_by":null}
+{"question":"Pourquoi les pertes étaient-elles élevées au mois de mai ?","role":"admin","dataset":null,"metric":null,"group_by":null}
+{"question":"Nombre de plants semés par espèce","role":"production","dataset":"operational_lots","metric":"sown","group_by":"species"}
+{"question":"Quel est le total des livraisons par client en campagne C25 ?","role":"admin","dataset":"historical_deliveries","metric":"records","group_by":"client"}
+{"question":"Quelle est la moyenne des pertes de greffage historiques par article ?","role":"admin","dataset":"historical_grafting","metric":"grafting_loss_rate","group_by":"article"}
+{"question":"Nombre d'événements par type d'opération ?","role":"production","dataset":"operational_events","metric":"records","group_by":"event_type"}
+{"question":"Les 10 variétés avec le taux de germination le plus fort en C25","role":"admin","dataset":"historical_production","metric":"germination_rate","group_by":"variety"}
+{"question":"Quelles commandes restent non livrées par client ?","role":"logistique","dataset":"operational_preparations","metric":"pending","group_by":"client"}
+{"question":"Quel est le nombre de lots opérationnels par statut qualité ?","role":"qualite","dataset":"operational_lots","metric":"lots","group_by":"quality_status"}
+{"question":"Comment fonctionne la certification blockchain ?","role":"lecture","dataset":null,"metric":null,"group_by":null}

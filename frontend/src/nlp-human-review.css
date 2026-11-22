@@ -1,0 +1,8 @@
+/* Phase 6: only an EDITABLE NLP draft. Never implies an operation was saved. */
+.nlp-review-panel{padding:16px;margin-top:12px;background:#f5f9f6;border:1px solid #d2e5d7;border-radius:14px;display:grid;gap:10px}
+.nlp-action-select{width:100%;padding:12px 13px;border:1px solid #adcdb8;border-radius:10px;background:#fff;color:#15422e;font:inherit}
+.nlp-action-select:focus{outline:3px solid #73cca356;border-color:#1b8e59}
+.nlp-hard-stop{padding:12px;background:#fff4e6;border:1px solid #edcc9f;border-radius:10px;color:#794d16;font-size:13px;line-height:1.5}
+.op-nlp-review{position:relative;background:#eff6ff;border:1px solid #a7c5e7;border-radius:12px;padding:15px 42px 15px 18px;margin:12px 0 18px;color:#244a6d}
+.op-nlp-review b{font-size:14px}.op-nlp-review p{font-size:13px;line-height:1.55;margin:7px 0 0}
+.op-nlp-review button{position:absolute;right:12px;top:10px;border:0;background:transparent;font-size:22px;color:inherit;cursor:pointer}

@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+!*.env.example
+*.pem
+*.key
+
+# Python tests
+.pytest_cache/
+
+# ETL output
+backend/etl_output/
+backend/etl_output*/
+
+# Private datasets
+*.xlsx
+*.xls
+
+# Local trained models
+backend/models/

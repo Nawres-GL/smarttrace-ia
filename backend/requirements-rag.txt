@@ -1,0 +1,2 @@
+# Optional semantic embeddings - install only if compatible with NLP dependencies
+sentence-transformers>=3,<6

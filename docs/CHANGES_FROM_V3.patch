@@ -1,0 +1,603 @@
+--- a/backend/rag/api.py
++++ b/backend/rag/api.py
+@@ -1,21 +1,29 @@
+-"""SmartTrace RAG v3: authenticated, read-only, inspectable evidence retrieval."""
++"""Phase 7 V4 — human-friendly RAG: exact records + governed analysis + approved docs.
++
++The API never issues writes and never treats Excel history as blockchain proof.
++Requests are authenticated; Excel remains admin-only and MongoDB site-scoped.
++"""
+ from __future__ import annotations
+ import os
++import re
+ from fastapi import APIRouter, Depends, HTTPException, Request, Response
+-
+ from app.auth import authenticated_user
+ from .schemas import QuestionIn, ExploreIn
+-from .catalog import public_catalog
+-from .planner import maybe_plan, norm
++from .catalog import public_catalog, FILTER_LABELS
++from .planner import Plan, maybe_plan, norm
++from .source_selection import alternative_for_empty, fallback_notice
+ from .explorer import explore, ForbiddenExplore, InvalidExplore
++from .presentation import present_explore, present_document
+ from .structured import structured_search, code_from_question
+-from .documents import search_documents
++from .documents import search_documents, document_status
+ from .llm import synthesize
++from .llm_planner import propose_plan
+ 
+ router = APIRouter(prefix='/api/rag', tags=['RAG · consultation et exploration'])
+ 
+ 
+ def _database(request: Request):
++    """Get the app's configured MongoDB database; never open a second unscoped client."""
+     db = getattr(request.app.state, 'db', None)
+     if db is None:
+         raise HTTPException(503, 'MongoDB Atlas requis pour SmartTrace.')
+@@ -23,6 +31,7 @@
+ 
+ 
+ def _run_explore(body: ExploreIn, user: dict, db):
++    """Apply catalog and access checks to deterministic calculations."""
+     try:
+         return explore(body.dataset, body.metric, body.group_by, body.filters,
+                        user, db, limit=body.limit, offset=body.offset,
+@@ -35,18 +44,69 @@
+         raise HTTPException(503, 'Source historique indisponible.') from exc
+ 
+ 
++def _execute_plan(plan: Plan, user: dict, db) -> dict:
++    """Execute only catalog-defined projections and metrics, never LLM-generated commands."""
++    return _run_explore(ExploreIn(dataset=plan.dataset, metric=plan.metric,
++                                  group_by=plan.group_by, filters=plan.filters,
++                                  order=plan.order, threshold=plan.threshold,
++                                  limit=plan.limit), user, db)
++
++
++def _is_document_question(q: str) -> bool:
++    """Prioritize procedural 'how/why' questions over analytic keyword collisions."""
++    normalized = norm(q)
++    return (any(x in normalized for x in ('comment fonctionne', 'quelles sont les etapes',
++            'quelle procedure', 'comment proceder', 'explique ', 'pourquoi ',
++            'quelles regles', 'que signifie', 'definition de', 'comment faire'))
++            and not any(x in normalized for x in ('combien', 'quel taux', 'moyenne', 'statistique')))
++
++
++def _answer_documents(question: str, user: dict) -> dict:
++    """Retrieve approved passages and optionally synthesize a cited explanation."""
++    try:
++        matches, mode = search_documents(question, user)
++    except (OSError, ValueError):
++        raise HTTPException(503, 'Index documentaire indisponible; vérifier les fichiers.')
++    sources = [{'id': chunk.id, 'kind': 'document', 'title': chunk.title,
++                'excerpt': chunk.content[:1100], 'file': chunk.file_name,
++                'retrieval_score': score} for chunk, score in matches[:5]]
++    if not sources:
++        return present_document(
++            'Je n’ai pas trouvé de document approuvé répondant à cette question. '
++            'Demandez à un administrateur de vérifier le dossier rag_documents et son manifeste.',
++            [], mode, ['Aucune réponse inventée. Vérifiez l’index documentaire via /api/rag/status.'])
++    generated, generation_mode = synthesize(question, sources)
++    if generated:
++        cited = [int(n) for n in re.findall(r'\[(\d+)\]', generated)]
++        if not cited or any(n < 1 or n > len(sources) for n in cited):
++            generated = None  # Unverifiable source numbers cannot be displayed as fact.
++    if not generated:
++        first = sources[0]
++        # Natural, concise fallback even without Ollama; source remains separately visible.
++        snippet = first['excerpt'].replace('#', '').strip()[:1000]
++        generated = f'Selon « {first["title"]} » :\n{snippet}\n\nVoir la source [1] pour le contexte.'
++    result = present_document(generated, sources, mode)
++    result['generation_mode'] = generation_mode if generated and generation_mode == 'ollama' else 'document_extractif'
++    result['read_only'] = True
++    return result
++
++
+ @router.get('/status')
+ def status(response: Response, user=Depends(authenticated_user)):
++    """Safe diagnostics to distinguish missing documents from retrieval failure."""
+     response.headers['Cache-Control'] = 'no-store'
+     return {'ready': True, 'read_only': True,
+-            'llm_enabled': os.getenv('RAG_USE_OLLAMA','0') == '1',
+-            'semantic_enabled': os.getenv('RAG_USE_EMBEDDINGS','1') == '1',
++            'llm_enabled': os.getenv('RAG_USE_OLLAMA', '0') == '1',
++            'llm_planner_enabled': os.getenv('RAG_USE_LLM_PLANNER', '0') == '1',
++            'semantic_enabled': os.getenv('RAG_USE_EMBEDDINGS', '0') == '1',
+             'historical_access': user.get('role') == 'admin',
+-            'note':'Analyse de données autorisées; Excel historique non certifié, réservé aux administrateurs.'}
++            'documents': document_status(user),
++            'note': 'Excel historique non certifié; réservé aux administrateurs.'}
+ 
+ 
+ @router.get('/catalog')
+ def catalog(response: Response, user=Depends(authenticated_user)):
++    """Return only datasets and fields that this user's role can query."""
+     response.headers['Cache-Control'] = 'no-store'
+     return public_catalog(user)
+ 
+@@ -54,94 +114,93 @@
+ @router.post('/explore')
+ def explore_data(body: ExploreIn, request: Request, response: Response,
+                  user=Depends(authenticated_user)):
+-    response.headers['Cache-Control'] = 'no-store'
+-    return _run_explore(body, user, _database(request))
++    """Run a user-selected, catalog-limited query from the structured Data Explorer."""
++    response.headers['Cache-Control'] = 'no-store'
++    result = _run_explore(body, user, _database(request))
++    return present_explore(result, body.dataset, body.metric, body.filters)
+ 
+ 
+ @router.post('/ask')
+ def ask(body: QuestionIn, request: Request, response: Response,
+         user=Depends(authenticated_user)):
++    """Orchestrate lot lookup, governed analytics and approved-document RAG.
++
++    Crucial safety property: empty operational results are NOT interpreted as
++    absence of historical data, and fallback never merges incompatible units.
++    """
+     response.headers['Cache-Control'] = 'no-store'
+     db = _database(request)
+     question = body.question.strip()
+     q = norm(question)
+-
+-    # Exact lot lookup includes the existing guarded history+operational logic.
+     if code_from_question(question):
+         answer, sources, route, warnings = structured_search(question, db, user)
+         if answer is not None:
+-            return {'answer': answer, 'route': route, 'sources': sources, 'warnings': warnings,
+-                    'retrieval_mode': 'excel_exact_et_mongo' if sources and any(s['kind']=='excel' for s in sources)
+-                                      else 'mongo_exact', 'generation_mode':'deterministe','read_only':True}
+-
+-    if ('quelles donnees' in q or 'quels jeux de donnees' in q or 'que puis-je demander' in q or
+-        'que peux-tu' in q or 'que sais-tu' in q):
+-        catalog = public_catalog(user)
+-        lines = [f"- {d['label']} : " + ', '.join(m['label'] for m in d['metrics'])
+-                 for d in catalog['datasets']]
+-        return {'answer':'Données actuellement interrogables pour votre rôle :\n' + '\n'.join(lines)
+-                + '\nUtilisez « Explorer les données » pour combiner librement les filtres autorisés.',
+-                'route':'catalogue','sources':[], 'warnings':[], 'retrieval_mode':'catalogue',
+-                'generation_mode':'deterministe','read_only':True}
++            return {'answer': answer, 'summary': answer, 'route': route, 'sources': sources,
++                    'warnings': warnings, 'read_only': True, 'status': 'ok',
++                    'retrieval_mode': 'lot_exact', 'generation_mode': 'deterministe'}
++
++    if any(phrase in q for phrase in ('quelles donnees', 'quels jeux de donnees',
++                                      'que puis-je demander', 'que peux-tu interroger')):
++        allowed = public_catalog(user)['datasets']
++        text = ('Voici les données que vous pouvez consulter : ' +
++                '; '.join(item['label'] for item in allowed) +
++                '. Utilisez « Explorer les données » pour choisir les mesures et filtres.')
++        return {'answer': text, 'summary': text, 'route': 'catalogue',
++                'sources': [], 'warnings': [], 'status': 'ok', 'read_only': True}
++
++    if _is_document_question(question):
++        return _answer_documents(question, user)
+ 
+     plan = maybe_plan(question, user.get('role'))
+-    if plan is not None:
+-        result = _run_explore(ExploreIn(dataset=plan.dataset, metric=plan.metric,
+-                                       group_by=plan.group_by, filters=plan.filters,
+-                                       order=plan.order, threshold=plan.threshold, limit=plan.limit), user, db)
+-        # Optional and clearly separated fallback: no operational loss data does NOT
+-        # imply no historical Excel losses. Never merge their different rates.
+-        if (user.get('role') == 'admin' and plan.dataset == 'operational_lots'
+-                and plan.metric in ('loss_rate', 'lost')
+-                and result.get('meta', {}).get('total_groups') == 0
+-                and result.get('meta', {}).get('complete_scan', False)
+-                and not any(w in q for w in ('operationnel','actif','mongo'))):
+-            historical = _run_explore(ExploreIn(
+-                dataset='historical_grafting', metric='total_loss_rate',
+-                group_by='lot_code', filters={k:v for k,v in plan.filters.items()
+-                                              if k in ('campaign','species','article','variety')},
+-                threshold=plan.threshold if plan.metric == 'loss_rate' else None,
+-                limit=plan.limit), user, db)
+-            if historical.get('meta',{}).get('total_groups',0):
+-                historical['answer'] = (
+-                    'Aucun résultat opérationnel exploitable pour ce calcul.\n'
+-                    'Source distincte, mesure distincte :\n' + historical['answer'])
+-                historical['warnings'].append(
+-                    'La colonne Excel Perte_Totale est une mesure historique déclarée, '
+-                    'et non le ratio MongoDB plants perdus / semences semées.')
+-                result = historical
+-        result['interpreted_query'] = {'dataset':plan.dataset, 'metric':plan.metric,
+-                                       'group_by':plan.group_by, 'filters':plan.filters}
+-        result['warnings'] = result.get('warnings', []) + [
+-            'Question interprétée automatiquement. Vérifiez les filtres ci-dessus ou utilisez l’explorateur pour les corriger.']
+-        return result
+-
+-    # Ask explanatory questions from APPROVED documents only.
+-    try:
+-        matches, mode = search_documents(question, user)
+-    except (OSError, ValueError):
+-        raise HTTPException(503, 'Index documentaire indisponible; vérifiez le manifeste et les fichiers.')
+-    sources = [{'id':chunk.id, 'kind':'document','title':chunk.title,
+-                'excerpt':chunk.content[:900], 'file':chunk.file_name,
+-                'retrieval_score':score} for chunk,score in matches[:5]]
+-    if not sources:
+-        return {'answer': ('Aucune source autorisée suffisamment pertinente trouvée pour cette question. '
+-                           'Je ne peux pas inventer la procédure ou les données manquantes. '
+-                           'Consultez « Explorer les données » ou ajoutez un document validé au manifeste.'),
+-                'route':'documents_sans_resultat','sources':[],'warnings':[],
+-                'retrieval_mode':mode,'generation_mode':'aucune_source','read_only':True}
+-    generated, generation_mode = synthesize(question, sources)
+-    # Refuse LLM outputs with fabricated or absent source numbering.
+-    if generated:
+-        import re
+-        cited = [int(n) for n in re.findall(r'\[(\d+)\]', generated)]
+-        if not cited or any(n < 1 or n > len(sources) for n in cited):
+-            generated = None
+-            generation_mode = 'citations_non_verifiables'
+-    if not generated:
+-        generated = 'Extraits pertinents (sans LLM local) :\n' + '\n\n'.join(
+-            f'[{i}] {src["title"]} : {src["excerpt"][:480]}' for i,src in enumerate(sources,1))
+-    return {'answer':generated, 'route':'documents','sources':sources,
+-            'retrieval_mode':mode,'generation_mode':generation_mode,
+-            'warnings':(['Ollama indisponible : extraits documentaires affichés directement.']
+-                        if generation_mode == 'ollama_indisponible' else []), 'read_only':True}
++    if plan is None:
++        plan = propose_plan(question, user)  # Optional local JSON proposal, schema-validated.
++    if plan is None:
++        if any(x in q for x in ('combien', 'nombre', 'taux', 'quantite', 'statistique',
++                                 'total', 'moyenne', 'classement', 'repartition')):
++            msg = ('Je ne peux pas calculer cet indicateur avec les champs autorisés disponibles. '
++                   'Vous pouvez consulter le catalogue et choisir une mesure dans « Explorer les données ». '
++                   'Aucune valeur n’a été estimée.')
++            return {'answer': msg, 'summary': msg, 'route': 'analyse_non_disponible',
++                    'status': 'not_supported', 'sources': [], 'warnings': [], 'read_only': True}
++        return _answer_documents(question, user)
++    result = _execute_plan(plan, user, db)
++    applied = plan
++    notice = ''
++    if (result.get('meta', {}).get('total_groups', 0) == 0 and
++            result.get('meta', {}).get('complete_scan') is True):
++        alternative = alternative_for_empty(plan, question, user)
++        if alternative is not None:
++            try:
++                alternate_result = _execute_plan(alternative, user, db)
++            except HTTPException as exc:
++                if exc.status_code != 503:
++                    raise
++                result.setdefault('warnings', []).append(
++                    'La source historique est temporairement indisponible; résultat opérationnel seulement.')
++                alternate_result = None
++            if alternate_result and alternate_result.get('meta', {}).get('total_groups', 0):
++                result, applied = alternate_result, alternative
++                notice = fallback_notice(plan, alternative)
++
++    result = present_explore(result, applied.dataset, applied.metric, applied.filters,
++                             notice=notice)
++    result['interpreted_query'] = {'dataset': applied.dataset, 'metric': applied.metric,
++                                   'group_by': applied.group_by, 'filters': applied.filters}
++    result['route'] = f'analytics:{applied.dataset}'
++    result['read_only'] = True
++    if notice:
++        result['fallback_from'] = plan.dataset
++    # Multi-dimensional question yields separate evidence panels, never ambiguous combined totals.
++    panels = []
++    if applied.extra_groups:
++        panels.append({'title': f'Vue par {FILTER_LABELS.get(applied.group_by, applied.group_by).lower()}', 'result': result.get('table')})
++        for grouping in applied.extra_groups:
++            other = Plan(applied.dataset, applied.metric, grouping, applied.filters,
++                         applied.order, applied.threshold, applied.limit)
++            sub = present_explore(_execute_plan(other, user, db),
++                                  applied.dataset, applied.metric, applied.filters)
++            panels.append({'title': f'Vue par {FILTER_LABELS.get(grouping, grouping).lower()}', 'result': sub.get('table'),
++                           'sources': sub.get('sources', []), 'warnings': sub.get('warnings', [])})
++        result['panels'] = panels
++        result['answer'] += '\nDeux regroupements sont présentés séparément ci-dessous.'
++    return result
+--- a/backend/rag/planner.py
++++ b/backend/rag/planner.py
+@@ -25,6 +25,7 @@
+     threshold: float | None = None
+     limit: int = 10
+     reason: str = 'analyse statistique'
++    extra_groups: tuple[str, ...] = ()
+ 
+ 
+ def _has(s, *words):
+@@ -92,10 +93,23 @@
+     # C25 often refers to Excel historical data, but never redirect non-admin to it.
+     prefer_history = historical or (not operational and role == 'admin' and 'c25' in q)
+ 
+-    if _has(q, 'prepar', 'reserv', 'commande'):
++    # A requested rate of grafting is a measured percentage, NOT a count of GREFFAGE events.
++    if (_has(q, 'taux de greff', 'taux moyen de greff', 'pourcentage de greffage', 'greffage moyen', 'moyenne de greffage')
++            and role == 'admin' and not operational):
++        dataset = 'historical_grafting'
++    elif (_has(q, 'plants greffes', 'quantite greffee', 'plants greffes nets') and
++          role == 'admin' and not operational):
++        dataset = 'historical_grafting'
++    elif _has(q, 'prepar', 'reserv', 'commande', 'reste a livrer', 'restant a livrer'):
+         dataset = 'operational_preparations'
+     elif _has(q, 'bon de livraison', 'bons de livraison', 'bl ', 'livrais', 'expedi', 'client', 'ville'):
+-        dataset = 'historical_deliveries' if prefer_history else 'operational_deliveries'
++        # Historical Excel has destination city; operational delivery records do not.
++        # An admin asking by city should not receive an ungrouped operational total.
++        needs_city = _has(q, 'par ville', 'ou par ville', 'et par ville', 'selon la ville',
++                          'par destination', 'par gouvernorat')
++        dataset = ('historical_deliveries' if (prefer_history or
++                    (role == 'admin' and needs_city and not operational))
++                   else 'operational_deliveries')
+     elif _has(q, 'greff', 'porte greffe'):
+         dataset = 'historical_grafting' if prefer_history else 'operational_events'
+     elif _has(q, 'perte totale', 'perte_greffage', 'taux de greffage'):
+@@ -111,13 +125,12 @@
+ 
+     spec = CATALOG[dataset]
+     group_by = _group(q)
+-    if group_by is None and re.search(r'\b(?:\d{1,2}\s+)?varietes\b', q) and _has(q,'germin','taux'):
++    if group_by is None and (re.search(r'\b(?:\d{1,2}\s+)?varietes\b', q) or
++                             ('germin' in q and 'compar' in q)) and _has(q,'germin','taux'):
+         group_by = 'variety'
+-    if group_by not in spec.dimensions:
+-        if group_by == 'city' and 'governorate' in spec.dimensions and 'gouvernorat' in q:
+-            group_by = 'governorate'
+-        else:
+-            group_by = None
++    if group_by is not None and group_by not in spec.dimensions:
++        # Never silently answer a 'by city' question with an ungrouped global total.
++        return None
+     if group_by is None and _has(q,'quels lots','liste des lots', 'les lots ayant', 'lots avec', 'top des lots') and 'lot_code' in spec.dimensions:
+         group_by = 'lot_code'
+ 
+@@ -127,7 +140,8 @@
+     if dataset == 'operational_lots' and _has(q,'qualite','controle') and _has(q,'par statut','par etat'):
+         group_by = 'quality_status'
+     if dataset == 'operational_lots' and _has(q,'qualite','controle') and _has(q,'attend','en attente','non conforme','a recontroler'):
+-        filters['quality_status'] = '__NOT_CONFORME__'
++        filters['quality_status'] = ('__PENDING_QUALITY__' if _has(q,'attend','en attente','a recontroler','non controle')
++                                     else '__NOT_CONFORME__')
+     if dataset == 'operational_events' and _has(q,'greff'):
+         filters['event_type'] = 'GREFFAGE'
+     if dataset == 'operational_lots' and _has(q,'controle qualite', 'attendent la qualite', 'non conform'):
+@@ -155,10 +169,11 @@
+         metric = ('grafting_loss_rate' if _has(q,'perte de greffage','pertes de greffage','perte greffage') else
+                   'total_loss_rate' if _has(q,'perte totale','taux de perte','pertes') else
+                   'grafting_rate' if _has(q,'taux de greff', 'taux moyen de greff', 'reussite de greffage', 'greffage moyen') else
++                  'plants_net' if _has(q,'plants greffes','quantite greffee', 'plants nets greffes') else
+                   'plants_destroyed' if _has(q,'detruit','destruction') else
+                   'lots' if _has(q,'nombre de lots') else 'records')
+     elif dataset == 'historical_deliveries':
+-        metric = ('delivery_notes' if _has(q,'combien de bons','nombre de bons') else
++        metric = ('delivery_notes' if _has(q,'combien de bons','nombre de bons','combien de livraisons','nombre de livraisons','plus de livraisons') else
+                   'item_quantity' if _has(q,'quantite','combien de plants','volume','total livre') else
+                   'lots' if _has(q,'nombre de lots','combien de lots') else 'records')
+     elif dataset == 'operational_preparations':
+@@ -195,5 +210,13 @@
+         return None
+     if dataset not in CATALOG or metric not in CATALOG[dataset].metrics:
+         return None
++    other = []
++    # 'par client ou par ville' asks for TWO views, not just the first group.
++    if group_by == 'client' and 'city' in spec.dimensions and re.search(
++            r'(?:client(?:s)?).{0,32}(?:ou|et|ainsi que).{0,12}ville', q):
++        other = ['city']
++    elif group_by == 'city' and 'client' in spec.dimensions and re.search(
++            r'ville.{0,32}(?:ou|et|ainsi que).{0,12}client', q):
++        other = ['client']
+     return Plan(dataset, metric, group_by, filters, order, threshold, limit,
+-                reason='Analyse déterministe avec champs autorisés')
++                reason='Analyse déterministe avec champs autorisés', extra_groups=tuple(other))
+--- a/backend/rag/explorer.py
++++ b/backend/rag/explorer.py
+@@ -220,6 +220,10 @@
+ def _filter(record: dict, spec: Dataset, filters: dict[str, str]) -> bool:
+     for field, wanted in filters.items():
+         observed = _extract(record, spec, field)
++        if field == 'quality_status' and wanted == '__PENDING_QUALITY__':
++            if _norm(observed) not in {'', 'non_controle', 'a_recontroler', 'non controle', 'a recontroler'}:
++                return False
++            continue
+         if field == 'quality_status' and wanted == '__NOT_CONFORME__':
+             if _norm(observed) == 'conforme':
+                 return False
+@@ -366,6 +370,7 @@
+     selected = ranked[offset:offset+limit]
+     sources = []
+     lines = []
++    data_rows = []
+     kind = 'excel' if spec.historical else 'mongodb'
+     if not selected:
+         lines.append('Aucun résultat exploitable dans les enregistrements autorisés correspondant à ces filtres.'
+@@ -377,6 +382,10 @@
+                      f'({bucket.rows} ligne(s), {bucket.valid} valeur(s) valide(s), '
+                      f'{bucket.invalid} ignorée(s)).')
+         lines.append(f'{offset+i}. {statement} [{i}]')
++        data_rows.append({'label': group if group != 'Toutes les données' else 'Total',
++                          'value': round(value, 5), 'display': _printed(value, rate=rate),
++                          'rows': bucket.rows, 'valid': bucket.valid,
++                          'ignored': bucket.invalid, 'source_index': i})
+         sid = hashlib.sha256(f'{dataset}:{metric}:{group}'.encode('utf-8')).hexdigest()[:15]
+         sources.append({'id': f'{kind}:aggregate:{sid}', 'kind': kind,
+                         'title': f'{spec.label} — {group}',
+@@ -407,11 +416,14 @@
+         warnings.append(f'{skipped} valeur(s) manquante(s) ou incohérente(s) ignorée(s) dans les groupes retenus.')
+     if partition_unit:
+         warnings.append('Les quantités historiques sont séparées par unité, sans conversion automatique en plants.')
+-    return {'answer': prefix + '\n' + '\n'.join(lines),
++    return {'answer': prefix + '\n' + '\n'.join(lines), 'data_rows': data_rows,
++            'metric_label': metric_spec.label, 'dataset_label': spec.label,
++            'source_status': 'Historique Excel non certifié' if spec.historical else 'MongoDB opérationnel',
+             'route': f'explorer:{dataset}', 'sources': sources, 'warnings': warnings,
+             'retrieval_mode': 'excel_exact' if spec.historical else 'mongo_exact',
+             'generation_mode': 'deterministe', 'read_only': True,
+             'meta': {'dataset': dataset, 'metric': metric, 'group_by': group_by,
+                      'filters': filters, 'total_groups': len(ranked), 'offset': offset,
+                      'limit': limit, 'scanned': len(records),
+-                     'matching_records': len(chosen), 'complete_scan': not overflow}}
++                     'matching_records': len(chosen), 'complete_scan': not overflow,
++                     'skipped_values': skipped, 'has_data': bool(selected)}}
+--- a/backend/rag/documents.py
++++ b/backend/rag/documents.py
+@@ -149,7 +149,7 @@
+     if not allowed:
+         return [], 'aucun_document_autorise'
+     lexical = lexical_rank(question, allowed, max(k * 2, 8))
+-    if os.getenv('RAG_USE_EMBEDDINGS', '1') == '0':
++    if os.getenv('RAG_USE_EMBEDDINGS', '0') == '0':
+         return lexical[:k], 'lexical'
+     try:
+         import numpy as np
+@@ -172,3 +172,23 @@
+         return sorted(ranked, key=lambda p: p[1], reverse=True)[:k], 'hybride_lexical_semantique'
+     except (ImportError, OSError, RuntimeError, ValueError):
+         return lexical[:k], 'lexical_fallback'
++
++
++def document_status(user: dict, root: Path = ROOT) -> dict:
++    """Report whether the approved document index is installed for this role.
++
++    No document body or unauthorized filename is exposed to other roles.
++    """
++    try:
++        if not (root / 'manifest.json').is_file():
++            return {'ready': False, 'visible_documents': 0,
++                    'hint': 'backend/rag_documents/manifest.json absent.'}
++        chunks = [item for item in load_chunks(root) if visible(item, user)]
++        return {'ready': bool(chunks),
++                'visible_documents': len({item.file_name for item in chunks}),
++                'visible_passages': len(chunks),
++                'hint': ('Index documentaire accessible.' if chunks
++                         else 'Aucun document approuvé accessible pour votre rôle/site.')}
++    except (OSError, ValueError, json.JSONDecodeError):
++        return {'ready': False, 'visible_documents': 0,
++                'hint': 'Manifeste ou documents invalides; vérifier les fichiers et les droits.'}
+--- a/frontend/src/RAGAssistant.jsx
++++ b/frontend/src/RAGAssistant.jsx
+@@ -3,14 +3,62 @@
+ 
+ const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+ const EXAMPLES = [
+-  'Compare les taux de germination des variétés de tomates pour la campagne C25.',
+-  'Quels lots ont un taux de perte supérieur à 30 % ?',
+   'Combien de livraisons par client ?',
+-  'Quelle quantité a été livrée par ville pendant C25 ?',
++  'Combien de plants ont été semés par espèce ?',
++  'Quel est le taux moyen de greffage par article ?',
++  'Compare les taux de germination des variétés de tomates pour C25.',
++  'Quels lots ont un ratio de perte supérieur à 30 % ?',
++  'Quelles sont les étapes du contrôle qualité avant livraison ?',
+   'Quel est l’historique complet du lot 13877 ?',
+-  'Quelles sont les étapes du contrôle qualité avant livraison ?',
+-  'Quelles données peux-tu interroger ?',
+ ];
++
++function DataTable({ table }) {
++  if (!table?.rows?.length) return null;
++  return <div className="rag-v4-tablewrap"><table className="rag-v4-table">
++    <thead><tr>{table.columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
++    <tbody>{table.rows.map((row, i) => <tr key={i}>
++      <td>{row.category}</td><td className="rag-v4-number">{row.value}</td>
++      <td>{row.records}</td>
++    </tr>)}</tbody>
++  </table></div>;
++}
++
++function AnswerView({ entry }) {
++  const hasPanels = !!entry.panels?.length;
++  return <>
++    <div className="rag-v4-response" role="status">{entry.summary || entry.answer}</div>
++    {hasPanels ? entry.panels.map((panel, i) =>
++      <section className="rag-v4-panel" key={i}>
++        <h4>{panel.title}</h4><DataTable table={panel.result} />
++        {!!panel.sources?.length && <details className="rag-sources"><summary>Justificatifs de cette vue ({panel.sources.length})</summary>
++          <div className="rag-source-list">{panel.sources.map((source, j) =>
++            <div className="rag-source" key={source.id || j}><b>{source.title}</b><p>{source.excerpt}</p></div>)}</div>
++        </details>}
++      </section>
++    ) : <DataTable table={entry.table} />}
++    {entry.provenance && <div className="rag-v4-provenance">
++      <strong>Source : {entry.provenance.source}</strong>
++      {entry.provenance.filters && <span>{entry.provenance.filters}</span>}
++      {!entry.provenance.complete && <span>Analyse partielle : tous les enregistrements n'ont pas été parcourus.</span>}
++    </div>}
++    {!!entry.warnings?.length && <details className="rag-v4-warnings"><summary>Précisions et limites ({entry.warnings.length})</summary>
++      <ul>{entry.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul></details>}
++    {!!entry.sources?.length && <details className="rag-sources">
++      <summary>Voir les sources et justificatifs ({entry.sources.length})</summary>
++      <div className="rag-source-list">{entry.sources.map((source, j) => <div className="rag-source" key={source.id || j}>
++        <div><b>[{j + 1}] {source.title}</b><small>{source.kind === 'excel'
++          ? 'Historique Excel · non certifié' : source.kind === 'mongodb'
++          ? 'MongoDB opérationnel' : 'Document interne'}</small></div>
++        <p>{source.excerpt}</p>
++      </div>)}</div>
++    </details>}
++    {entry.interpreted_query && <details className="rag-v3-interpretation">
++      <summary>Détails techniques de la recherche (pour diagnostic)</summary>
++      <pre>{JSON.stringify(entry.interpreted_query, null, 2)}</pre>
++    </details>}
++  </>;
++}
++
+ 
+ export default function RAGAssistant({ token }) {
+   const [mode, setMode] = useState('chat');
+@@ -196,22 +244,18 @@
+           <div className="rag-msg rag-human" key={i}><span>Vous</span><p>{entry.text}</p></div> :
+           <article className="rag-msg rag-ai" key={i}>
+             <div className="rag-answer-title"><strong>SmartTrace IA</strong>
+-              <span>{entry.generation_mode === 'ollama' ? 'Synthèse LLM local' : 'Résultat vérifiable · sans modification'}</span></div>
+-            <div className="rag-answer-text">{entry.answer}</div>
+-            {entry.interpreted_query && <details className="rag-v3-interpretation">
+-              <summary>Comment la question a été interprétée</summary>
+-              <pre>{JSON.stringify(entry.interpreted_query, null, 2)}</pre>
+-            </details>}
+-            {!!entry.warnings?.length && <div className="rag-warnings">{entry.warnings.join(' · ')}</div>}
+-            {!!entry.sources?.length && <details className="rag-sources" open>
+-              <summary>Sources ({entry.sources.length})</summary>
+-              <div className="rag-source-list">{entry.sources.map((s, j) =>
+-                <div className="rag-source" key={s.id || j}>
+-                  <div><b>[{j+1}] {s.title}</b><small>{s.kind === 'excel' ? 'Excel historique · non certifié' :
+-                      s.kind === 'mongodb' ? 'MongoDB opérationnel' : 'Document approuvé'}</small></div>
+-                  <p>{s.excerpt}</p>
+-                </div>)}</div>
+-            </details>}
++              <span>{entry.generation_mode === 'ollama' ? 'Synthèse LLM local' : 'Réponse fondée sur les données disponibles'}</span></div>
++            <AnswerView entry={entry} />
++            {entry.interpreted_query && <button type="button" className="rag-v4-explore-link"
++              onClick={() => {
++                const info = entry.interpreted_query;
++                setDataset(info.dataset); setMetric(info.metric);
++                setGroupBy(info.group_by || '');
++                setFilters(Object.entries(info.filters || {}).map(([field, value]) => ({ field, value })));
++                setMode('explore');
++              }}>
++              Modifier cette analyse dans l'explorateur
++            </button>}
+           </article>)}
+         <div ref={bottom}/>
+       </div>
+--- a/frontend/src/rag-assistant.css
++++ b/frontend/src/rag-assistant.css
+@@ -42,3 +42,29 @@
+ .rag-v3-more { margin:5px 0 15px; }
+ .rag-v3-more:disabled, .rag-v3-explorer button:disabled { opacity:.55; cursor:not-allowed; }
+ @media (max-width:650px) { .rag-v3-grid { grid-template-columns:1fr; } .rag-v3-filter { grid-template-columns:1fr; } }
++
++
++/* V4 — readable responses and expandable evidence instead of diagnostic dumps */
++.rag-v4-response { font-size:14px; line-height:1.75; white-space:pre-line; color:#244536;
++  border-left:3px solid #31926b; padding:6px 12px; margin:8px 0 12px; }
++.rag-v4-tablewrap {overflow:auto; max-width:min(780px, 100%); background:white;
++  border:1px solid #dce9e1; border-radius:12px; margin:9px 0 12px; }
++.rag-v4-table {border-collapse:collapse; width:100%; font-size:13px; min-width:410px; }
++.rag-v4-table th {text-align:left; background:#edf7f0; color:#23533c;
++  font-size:12px; padding:10px; border-bottom:1px solid #dbe9df; }
++.rag-v4-table td {padding:9px 10px; border-bottom:1px solid #edf2ef; }
++.rag-v4-table tbody tr:last-child td {border-bottom:none;}
++.rag-v4-table tbody tr:hover {background:#f8fcf9;}
++.rag-v4-number {font-weight:750; font-variant-numeric:tabular-nums; color:#17784c;}
++.rag-v4-panel h4 {font-size:13px; margin:16px 0 6px; color:#275740;}
++.rag-v4-provenance {display:flex; flex-wrap:wrap; gap:5px 12px; margin-top:10px;
++  font-size:12px; color:#627568;}
++.rag-v4-provenance strong {color:#2a6748;}
++.rag-v4-warnings {margin-top:10px; font-size:12px; color:#815b22;}
++.rag-v4-warnings summary {cursor:pointer; font-weight:600;}
++.rag-v4-warnings ul {padding-left:18px; margin:6px 0;}
++.rag-v4-response, .rag-v4-panel {overflow-wrap:anywhere;}
++
++.rag-v4-explore-link {margin-top:12px;padding:9px 12px;border:1px solid #a5cbb2;
++  border-radius:9px;background:white;color:#196b43;cursor:pointer;font-size:12px;font-weight:700;}
++.rag-v4-explore-link:hover {background:#edf8f0;}

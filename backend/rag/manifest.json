@@ -1,0 +1,28 @@
+{
+  "documents": [
+    {
+      "file": "smarttrace_guide_technique.md",
+      "title": "Guide technique SmartTrace — démonstration",
+      "roles": [
+        "admin",
+        "production",
+        "qualite",
+        "logistique",
+        "lecture"
+      ],
+      "sites": []
+    },
+    {
+      "file": "controle_qualite_smarttrace.md",
+      "title": "Contrôle qualité avant livraison — guide applicatif SmartTrace (non officiel)",
+      "roles": [
+        "admin",
+        "qualite",
+        "production",
+        "logistique",
+        "lecture"
+      ],
+      "sites": []
+    }
+  ]
+}
